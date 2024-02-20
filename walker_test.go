@@ -288,10 +288,62 @@ func Test_Slice(t *testing.T) {
 	}
 }
 
+func Test_literal_routine(t *testing.T) {
+	five := 5
+	six := 6
+
+	testCases := []struct {
+		name     string
+		input    interface{}
+		jsonable bool
+		routines []Node_routine
+		expect   interface{}
+	}{
+		{
+			input:  5,
+			expect: 6,
+			routines: []Node_routine{
+				func(ctx context.Context, node TreeNode) {
+					n, err := node.Value().Int()
+					if err != nil {
+						t.Logf("node value %+v", node)
+						return
+					}
+					node.Value().Set(n + 1)
+				},
+			},
+		},
+		{
+			input:  &five,
+			expect: &six,
+			routines: []Node_routine{
+				func(ctx context.Context, node TreeNode) {
+					n, err := node.Value().Int()
+					if err != nil {
+						t.Logf("node value %+v", node)
+						return
+					}
+					node.Value().Set(n + 1)
+				},
+			},
+		},
+	}
+	for _, v := range testCases {
+		t.Run(v.name, func(t *testing.T) {
+			tw := NewTreeWalker(
+				WithRoutine(v.routines...),
+			)
+			got := tw.Walk(context.Background(), v.input)
+			if !reflect.DeepEqual(got, v.expect) {
+				t.Errorf("miss match: \n\tinput:  %+v\n\texpect:%+v\n\tgot:   %+v", v.input, v.expect, got)
+			}
+		})
+	}
+}
+
 func Test_map_routine(t *testing.T) {
 	testCases := []struct {
 		name     string
-		enable   bool
 		input    interface{}
 		jsonable bool
 		routines []Node_routine
@@ -735,11 +787,19 @@ func Test_struct(t *testing.T) {
 		embedPrivateInt    int
 	}
 
+	type Tws_child struct {
+		ChildPublicString  string `json:"childPublicString"`
+		ChildPublicInt     int    `json:"childPublicInt"`
+		childPrivateString string
+		childPrivateInt    int
+	}
+
 	type tws struct {
 		PublicString  string `json:"publicString"`
 		PublicInt     int    `json:"publicInt"`
 		privateString string
 		privateInt    int
+		TwxChild      *Tws_child
 		Tws_embed
 	}
 
@@ -804,6 +864,34 @@ func Test_struct(t *testing.T) {
 				},
 			},
 		},
+		{
+			input: &tws{
+				TwxChild: &Tws_child{
+					ChildPublicString: "alice",
+					ChildPublicInt:    5,
+				},
+			},
+			expect: &tws{
+				TwxChild: &Tws_child{
+					ChildPublicString: "bob",
+					ChildPublicInt:    8,
+				},
+			},
+			routines: []Node_routine{
+				func(ctx context.Context, node TreeNode) {
+					if node.Type() != NodeType_struct_member {
+						return
+					}
+
+					if node.Key().MustString() == "ChildPublicString" {
+						node.Value().Set("bob")
+					}
+					if node.Key().MustString() == "ChildPublicInt" {
+						node.Value().Set(8)
+					}
+				},
+			},
+		},
 	}
 	for _, v := range testCases {
 		t.Run(v.name, func(t *testing.T) {
@@ -830,304 +918,279 @@ func Test_struct(t *testing.T) {
 	}
 }
 
-// // 最大递归深度测试
-// func Test_MaxDepth(t *testing.T) {
-// 	testCases := []struct {
-// 		name     string
-// 		input    interface{}
-// 		jsonable bool
-// 		routines []Node_routine
-// 		expect   interface{}
-// 		maxDepth int
-// 	}{
-// 		{
-// 			name: "不限制深度测试",
-// 			input: map[interface{}]interface{}{
-// 				"a": map[interface{}]interface{}{
-// 					"b": map[interface{}]interface{}{
-// 						"c": map[interface{}]interface{}{
-// 							"d": map[interface{}]interface{}{
-// 								"e": map[interface{}]interface{}{
-// 									"f": map[interface{}]interface{}{
-// 										"g": []interface{}{
-// 											"alice",
-// 											"bob",
-// 										},
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 			},
-// 			jsonable: true,
-// 			routines: []Node_routine{
-// 				func(ctx context.Context, node *TreeNode) Routine_action {
-// 					if node.NType == NodeType_map_key || node.NType == NodeType_val_string {
-// 						node.S = strings.ToUpper(node.String())
-// 						return Routine_override
-// 					}
-// 					return Routine_blank
-// 				},
-// 			},
-// 			expect: map[string]interface{}{
-// 				"A": map[string]interface{}{
-// 					"B": map[string]interface{}{
-// 						"C": map[string]interface{}{
-// 							"D": map[string]interface{}{
-// 								"E": map[string]interface{}{
-// 									"F": map[string]interface{}{
-// 										"G": []interface{}{
-// 											"ALICE",
-// 											"BOB",
-// 										},
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 			},
-// 			maxDepth: NoDepthLimit,
-// 		},
-// 		{
-// 			name: "深度限制高于实际深度",
-// 			input: map[interface{}]interface{}{
-// 				"a": map[interface{}]interface{}{
-// 					"b": map[interface{}]interface{}{
-// 						"c": map[interface{}]interface{}{
-// 							"d": map[interface{}]interface{}{
-// 								"e": map[interface{}]interface{}{
-// 									"f": map[interface{}]interface{}{
-// 										"g": []interface{}{
-// 											"alice",
-// 											"bob",
-// 										},
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 			},
-// 			jsonable: true,
-// 			routines: []Node_routine{
-// 				func(ctx context.Context, node *TreeNode) Routine_action {
-// 					if node.NType == NodeType_map_key || node.NType == NodeType_val_string {
-// 						node.S = strings.ToUpper(node.String())
-// 						return Routine_override
-// 					}
-// 					return Routine_blank
-// 				},
-// 			},
-// 			expect: map[string]interface{}{
-// 				"A": map[string]interface{}{
-// 					"B": map[string]interface{}{
-// 						"C": map[string]interface{}{
-// 							"D": map[string]interface{}{
-// 								"E": map[string]interface{}{
-// 									"F": map[string]interface{}{
-// 										"G": []interface{}{
-// 											"ALICE",
-// 											"BOB",
-// 										},
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 			},
-// 			maxDepth: 10,
-// 		},
-// 		{
-// 			name: "深度限制低于实际深度",
-// 			input: map[interface{}]interface{}{
-// 				"a": map[interface{}]interface{}{
-// 					"b": map[interface{}]interface{}{
-// 						"c": map[interface{}]interface{}{
-// 							"d": map[interface{}]interface{}{
-// 								"e": map[interface{}]interface{}{
-// 									"f": map[interface{}]interface{}{
-// 										"g": []interface{}{
-// 											"alice",
-// 											"bob",
-// 										},
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 			},
-// 			jsonable: true,
-// 			routines: []Node_routine{
-// 				func(ctx context.Context, node *TreeNode) Routine_action {
-// 					if node.NType == NodeType_map_key || node.NType == NodeType_val_string {
-// 						node.S = strings.ToUpper(node.String())
-// 						return Routine_override
-// 					}
-// 					return Routine_blank
-// 				},
-// 			},
-// 			expect: map[string]interface{}{ // 0
-// 				"A": map[string]interface{}{ // 1
-// 					"B": map[string]interface{}{ // 2
-// 						"C": map[string]interface{}{ // 3
-// 							"D": map[string]interface{}{ // 4
-// 								"E": map[string]interface{}{ // 5
-// 									"F": map[interface{}]interface{}{
-// 										"g": []interface{}{
-// 											"alice",
-// 											"bob",
-// 										},
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 			},
-// 			maxDepth: 5,
-// 		},
-// 		{
-// 			name: "深度限制低于实际深度(两组map路径)",
-// 			input: map[interface{}]interface{}{ // 0
-// 				"a": map[interface{}]interface{}{ // 1
-// 					"b": map[interface{}]interface{}{ // 2
-// 						"c": map[interface{}]interface{}{ // 3
-// 							"d": map[interface{}]interface{}{ // 4
-// 								"e": map[interface{}]interface{}{
-// 									"f": map[interface{}]interface{}{
-// 										"g": []interface{}{
-// 											"alice",
-// 											"bob",
-// 										},
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 				"b": map[interface{}]interface{}{
-// 					"c": map[interface{}]interface{}{
-// 						"d": map[interface{}]interface{}{
-// 							"e": map[interface{}]interface{}{
-// 								"f": map[interface{}]interface{}{
-// 									"g": []interface{}{
-// 										"alice",
-// 										"bob",
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 			},
-// 			jsonable: true,
-// 			routines: []Node_routine{
-// 				func(ctx context.Context, node *TreeNode) Routine_action {
-// 					if node.NType == NodeType_map_key || node.NType == NodeType_val_string {
-// 						node.S = strings.ToUpper(node.String())
-// 						return Routine_override
-// 					}
-// 					return Routine_blank
-// 				},
-// 			},
-// 			expect: map[string]interface{}{ // 0
-// 				"A": map[string]interface{}{ // 1
-// 					"B": map[string]interface{}{ // 2
-// 						"C": map[string]interface{}{ // 3
-// 							"D": map[string]interface{}{ // 4
-// 								"E": map[string]interface{}{ // 5
-// 									"F": map[interface{}]interface{}{
-// 										"g": []interface{}{
-// 											"alice",
-// 											"bob",
-// 										},
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 				"B": map[string]interface{}{ // 1
-// 					"C": map[string]interface{}{ // 2
-// 						"D": map[string]interface{}{ // 3
-// 							"E": map[string]interface{}{ // 4
-// 								"F": map[string]interface{}{ // 5
-// 									"G": []interface{}{
-// 										"alice",
-// 										"bob",
-// 									},
-// 								},
-// 							},
-// 						},
-// 					},
-// 				},
-// 			},
-// 			maxDepth: 5,
-// 		},
-// 	}
-// 	for _, v := range testCases {
-// 		t.Run(v.name, func(t *testing.T) {
-// 			tw := NewTreeWalker(
-// 				WithMaxDepth(v.maxDepth),
-// 				WithRoutine(v.routines...),
-// 				WithJsonableMap(v.jsonable),
-// 			)
-// 			got := tw.Walk(context.Background(), v.input)
-// 			if !reflect.DeepEqual(got, v.expect) {
-// 				t.Errorf("miss match: \n\tinput:  %+v\n\texpect:%+v\n\tgot:   %+v", v.input, v.expect, got)
-// 			}
-// 		})
-// 	}
-// }
-
-// type Person struct {
-// 	Name   string
-// 	Age    int
-// 	Height float32
-// }
-
-// func Test_Struct(t *testing.T) {
-// 	testCases := []struct {
-// 		name    string
-// 		input   interface{}
-// 		routine []Node_routine
-// 		expect  string
-// 	}{
-// 		{
-// 			input: &Person{
-// 				Name:   "alice",
-// 				Age:    5,
-// 				Height: 110.5,
-// 			},
-// 			routine: []Node_routine{
-// 				func(ctx context.Context, node *TreeNode) Routine_action {
-// 					if node.NType == NodeType_struct {
-// 						p := node.Struct.(Person)
-// 						p.Age *= 10
-// 						p.Height += 58
-// 						p.Name = strings.Repeat(p.Name, 3)
-// 						node.Struct = p
-// 						return Routine_override
-// 					}
-// 					return Routine_blank
-// 				},
-// 			},
-// 		},
-// 	}
-// 	for _, v := range testCases {
-// 		t.Run(v.name, func(t *testing.T) {
-// 			tw := NewTreeWalker(
-// 				WithRoutine(v.routine...),
-// 			)
-// 			got := tw.Walk(context.Background(), v.input)
-// 			t.Logf("%+v", got)
-// 		})
-// 	}
-// }
+// 最大递归深度测试
+func Test_MaxDepth(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    interface{}
+		jsonable bool
+		routines []Node_routine
+		expect   interface{}
+		maxDepth int
+	}{
+		{
+			name:     "不限制深度测试",
+			maxDepth: NoDepthLimit,
+			input: map[interface{}]interface{}{
+				"a": map[interface{}]interface{}{
+					"b": map[interface{}]interface{}{
+						"c": map[interface{}]interface{}{
+							"d": map[interface{}]interface{}{
+								"e": map[interface{}]interface{}{
+									"f": map[interface{}]interface{}{
+										"g": []interface{}{
+											"alice",
+											"bob",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expect: map[string]interface{}{
+				"A": map[string]interface{}{
+					"B": map[string]interface{}{
+						"C": map[string]interface{}{
+							"D": map[string]interface{}{
+								"E": map[string]interface{}{
+									"F": map[string]interface{}{
+										"G": []interface{}{
+											"ALICE",
+											"BOB",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			routines: []Node_routine{
+				func(ctx context.Context, node TreeNode) {
+					if node.Type() == NodeType_map_pair {
+						s := strings.ToUpper(node.Key().MustString())
+						node.Key().Set(s)
+					} else if node.Type() == NodeType_slice_member {
+						s, err := node.Value().String()
+						if err != nil {
+							return
+						}
+						s = strings.ToUpper(s)
+						node.Value().Set(s)
+					}
+				},
+			},
+		},
+		{
+			name:     "深度限制大于实际深度",
+			maxDepth: 10,
+			input: map[interface{}]interface{}{
+				"a": map[interface{}]interface{}{
+					"b": map[interface{}]interface{}{
+						"c": map[interface{}]interface{}{
+							"d": map[interface{}]interface{}{
+								"e": map[interface{}]interface{}{
+									"f": map[interface{}]interface{}{
+										"g": []interface{}{
+											"alice",
+											"bob",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expect: map[string]interface{}{
+				"A": map[string]interface{}{
+					"B": map[string]interface{}{
+						"C": map[string]interface{}{
+							"D": map[string]interface{}{
+								"E": map[string]interface{}{
+									"F": map[string]interface{}{
+										"G": []interface{}{
+											"ALICE",
+											"BOB",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			routines: []Node_routine{
+				func(ctx context.Context, node TreeNode) {
+					if node.Type() == NodeType_map_pair {
+						s := strings.ToUpper(node.Key().MustString())
+						node.Key().Set(s)
+					} else if node.Type() == NodeType_slice_member {
+						s, err := node.Value().String()
+						if err != nil {
+							return
+						}
+						s = strings.ToUpper(s)
+						node.Value().Set(s)
+					}
+				},
+			},
+		},
+		{
+			name:     "深度限制小于实际深度",
+			maxDepth: 5,
+			input: map[interface{}]interface{}{
+				"a": map[interface{}]interface{}{
+					"b": map[interface{}]interface{}{
+						"c": map[interface{}]interface{}{
+							"d": map[interface{}]interface{}{
+								"e": map[interface{}]interface{}{
+									"f": map[interface{}]interface{}{
+										"g": []interface{}{
+											"alice",
+											"bob",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expect: map[string]interface{}{ // 0
+				"A": map[string]interface{}{ // 1
+					"B": map[string]interface{}{ // 2
+						"C": map[string]interface{}{ // 3
+							"D": map[string]interface{}{ // 4
+								"E": map[string]interface{}{ // 5
+									"F": map[interface{}]interface{}{
+										"g": []interface{}{
+											"alice",
+											"bob",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			routines: []Node_routine{
+				func(ctx context.Context, node TreeNode) {
+					if node.Type() == NodeType_map_pair {
+						s := strings.ToUpper(node.Key().MustString())
+						node.Key().Set(s)
+					} else if node.Type() == NodeType_slice_member {
+						s, err := node.Value().String()
+						if err != nil {
+							return
+						}
+						s = strings.ToUpper(s)
+						node.Value().Set(s)
+					}
+				},
+			},
+		},
+		{
+			name:     "深度限制低于实际深度(两组map路径)",
+			maxDepth: 5,
+			input: map[interface{}]interface{}{ // 0
+				"a": map[interface{}]interface{}{ // 1
+					"b": map[interface{}]interface{}{ // 2
+						"c": map[interface{}]interface{}{ // 3
+							"d": map[interface{}]interface{}{ // 4
+								"e": map[interface{}]interface{}{
+									"f": map[interface{}]interface{}{
+										"g": []interface{}{
+											"alice",
+											"bob",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"b": map[interface{}]interface{}{
+					"c": map[interface{}]interface{}{
+						"d": map[interface{}]interface{}{
+							"e": map[interface{}]interface{}{
+								"f": map[interface{}]interface{}{
+									"g": []interface{}{
+										"alice",
+										"bob",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expect: map[string]interface{}{ // 0
+				"A": map[string]interface{}{ // 1
+					"B": map[string]interface{}{ // 2
+						"C": map[string]interface{}{ // 3
+							"D": map[string]interface{}{ // 4
+								"E": map[string]interface{}{ // 5
+									"F": map[interface{}]interface{}{
+										"g": []interface{}{
+											"alice",
+											"bob",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				"B": map[string]interface{}{ // 1
+					"C": map[string]interface{}{ // 2
+						"D": map[string]interface{}{ // 3
+							"E": map[string]interface{}{ // 4
+								"F": map[string]interface{}{ // 5
+									"G": []interface{}{
+										"alice",
+										"bob",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			routines: []Node_routine{
+				func(ctx context.Context, node TreeNode) {
+					if node.Type() == NodeType_map_pair {
+						s := strings.ToUpper(node.Key().MustString())
+						node.Key().Set(s)
+					} else if node.Type() == NodeType_slice_member {
+						s, err := node.Value().String()
+						if err != nil {
+							return
+						}
+						s = strings.ToUpper(s)
+						node.Value().Set(s)
+					}
+				},
+			},
+		},
+	}
+	for _, v := range testCases {
+		t.Run(v.name, func(t *testing.T) {
+			tw := NewTreeWalker(
+				WithMaxDepth(v.maxDepth),
+				WithRoutine(v.routines...),
+				WithJsonableMap(),
+			)
+			got := tw.Walk(context.Background(), v.input)
+			if !reflect.DeepEqual(got, v.expect) {
+				t.Errorf("miss match: \n\tinput:  %+v\n\texpect:%+v\n\tgot:   %+v", v.input, v.expect, got)
+			}
+		})
+	}
+}
 
 // func Benchmark_Walk(b *testing.B) {
 // 	testCases := []struct {

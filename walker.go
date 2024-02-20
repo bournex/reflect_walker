@@ -5,23 +5,19 @@ import (
 	"reflect"
 )
 
-type WalkOption func(tw *walker)
 type Node_routine func(ctx context.Context, node TreeNode)
 type Walker interface {
 	Walk(context.Context, interface{}) interface{}
 }
 
 const NoDepthLimit = -1
+const DepthCtxKey = "_reflect_walker_curr_depth"
+
+type WalkOption func(tw *walker)
 
 func WithMaxDepth(max_depth int) WalkOption {
 	return func(tw *walker) {
 		tw.maxDepth = max_depth
-	}
-}
-
-func WithInPlace() WalkOption {
-	return func(tw *walker) {
-		tw.inPlace = true
 	}
 }
 
@@ -49,10 +45,10 @@ func NewTreeWalker(wo ...WalkOption) Walker {
 }
 
 type walker struct {
-	maxDepth int            // recursive depth
-	jsonable bool           // make input json marshalable or let it be
-	inPlace  bool           // in-place modify or not
-	routines []Node_routine // custom callback routine
+	maxDepth      int            // recursive depth
+	jsonable      bool           // make input json marshalable or let it be
+	forceOverride bool           // copy or in-place override
+	routines      []Node_routine // custom callback routine
 }
 
 func (tr *walker) Walk(ctx context.Context, in interface{}) interface{} {
@@ -88,36 +84,53 @@ func (tr *walker) walk(ctx context.Context, in interface{}) interface{} {
 	case reflect.Pointer:
 		in = tr.walk_pointer(ctx, in)
 	case reflect.Interface:
-		//
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		fallthrough
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		fallthrough
-	case reflect.String:
-		fallthrough
-	case reflect.Bool:
-		fallthrough
-	case reflect.Float32, reflect.Float64:
-		if !tr.has_custom_routines() {
-			// 不会修改的话，就不用执行后面的逻辑了
-			break
+		// do nothing
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, // 有符号数
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, // 无符号数
+		reflect.Float32, reflect.Float64, // 浮点数
+		reflect.Complex64, reflect.Complex128, // 复数
+		reflect.String, // 字符串
+		reflect.Bool:   // 布尔
+		in = tr.walk_literal(ctx, in, false)
+	default:
+	}
+	return in
+}
+
+func (tr *walker) walk_literal(ctx context.Context, in interface{}, settable bool) interface{} {
+	intyp := reflect.TypeOf(in)
+	inval := reflect.ValueOf(in)
+	if settable {
+		intyp = intyp.Elem()
+		inval = inval.Elem()
+	}
+
+	node := &treeNode{
+		nType: NodeType_literal,
+	}
+	node.nValue = &treeVariable{node: node, t: intyp, value: inval.Interface()}
+	var override bool
+
+	for _, r := range tr.routines {
+		r(ctx, node)
+		rt := node.getAction()
+
+		if rt == routine_override {
+			override = true
 		}
+	}
 
-		node := &treeNode{nType: NodeType_literal, nValue: &treeVariable{t: intyp, value: in}}
-		var changed bool
-		for _, r := range tr.routines {
-			r(ctx, node)
-
-			changed = changed || (node.getAction() == routine_override)
-		}
-
-		if changed {
-			nval := reflect.New(intyp).Elem() // 类型保留
+	if override {
+		if settable {
+			inval.Set(node.nValue.rvalue())
+		} else {
+			nval := reflect.New(intyp).Elem()
 			newVal := reflect.ValueOf(node.nValue.Interface())
 			nval.Set(newVal)
 			in = nval.Interface()
 		}
 	}
+
 	return in
 }
 
@@ -245,8 +258,12 @@ func (tr *walker) walk_struct(ctx context.Context, in interface{}) interface{} {
 	intyp := reflect.TypeOf(in)
 	inval := reflect.ValueOf(in)
 
-	writable := intyp.Kind() == reflect.Pointer || intyp.Kind() == reflect.Interface
+	kind := intyp.Kind()
+	writable := kind == reflect.Pointer || kind == reflect.Interface
 	if writable {
+		if inval.IsNil() {
+			return in
+		}
 		inval = inval.Elem()
 		intyp = intyp.Elem()
 	}
@@ -284,7 +301,7 @@ func (tr *walker) walk_struct(ctx context.Context, in interface{}) interface{} {
 			rt = node.getAction()
 			if rt == routine_delete {
 				// struct成员不支持delete，与blank效果一样
-				// break
+				break
 			} else if rt == routine_override {
 				override = true
 			}
@@ -295,7 +312,8 @@ func (tr *walker) walk_struct(ctx context.Context, in interface{}) interface{} {
 			inval.Field(i).Set(val)
 		}
 	}
-	return inval.Interface()
+	// -
+	return in
 }
 
 func (tr *walker) walk_pointer(ctx context.Context, in interface{}) interface{} {
@@ -310,14 +328,19 @@ func (tr *walker) walk_pointer(ctx context.Context, in interface{}) interface{} 
 	} else if typ.Kind() == reflect.Struct {
 		in = tr.walk_struct(ctx, in)
 	} else {
-		in = tr.walk(ctx, inval.Elem().Interface())
+		switch typ.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, // 有符号数
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, // 无符号数
+			reflect.Float32, reflect.Float64, // 浮点数
+			reflect.Complex64, reflect.Complex128, // 复数
+			reflect.String, // 字符串
+			reflect.Bool:   // 布尔
+			in = tr.walk_literal(ctx, inval.Interface(), true)
+		}
+		// in = tr.walk(ctx, inval.Elem().Interface())
 	}
 
 	return in
-}
-
-func (tr *walker) has_custom_routines() bool {
-	return len(tr.routines) > 0
 }
 
 func (tr *walker) is_literal(val *reflect.Value) bool {
@@ -343,9 +366,9 @@ func (tr *walker) dive(ctx context.Context) (context.Context, bool) {
 		return ctx, false
 	}
 
-	depth := ctx.Value("tree_walker_depth")
+	depth := ctx.Value(DepthCtxKey)
 	if depth == nil {
-		return context.WithValue(ctx, "tree_walker_depth", new(int)), false
+		return context.WithValue(ctx, DepthCtxKey, new(int)), false
 	}
 
 	if n, ok := depth.(*int); ok {
@@ -365,7 +388,7 @@ func (tr *walker) rise(ctx context.Context) {
 		return
 	}
 
-	n, _ := ctx.Value("tree_walker_depth").(*int)
+	n, _ := ctx.Value(DepthCtxKey).(*int)
 	curDepth := *n
 	if curDepth > 0 {
 		*n = curDepth - 1

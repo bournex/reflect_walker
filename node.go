@@ -30,8 +30,9 @@ const (
 )
 
 type TreeVariable interface {
-	// NType
-	typetype() reflect.Type
+	rtype() reflect.Type
+	rvalue() reflect.Value
+
 	TypeName() string       // 原始类型名
 	TypeKind() reflect.Kind // 原始Kind
 
@@ -80,8 +81,13 @@ type treeVariable struct {
 }
 
 // 获取反射类型
-func (tv *treeVariable) typetype() reflect.Type {
+func (tv *treeVariable) rtype() reflect.Type {
 	return tv.t
+}
+
+// 获取反射类型
+func (tv *treeVariable) rvalue() reflect.Value {
+	return reflect.ValueOf(tv.value)
 }
 
 // 获取原始类型名
@@ -266,6 +272,7 @@ type TreeNode interface {
 	Key() TreeVariable
 	Value() TreeVariable
 	Delete()
+
 	// 内部接口
 	getAction() routine_action
 	setAction(routine_action)
